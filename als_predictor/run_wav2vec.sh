@@ -16,10 +16,10 @@ export W2V2=/data/sls/scratch/limingw/models/finetuned/wav2vec_big_960h.pt
 export W2V2_ALIGN_DIR=/data/sls/scratch/yuangong/als/w2v_align
 
 am_name=w2v2_big_960h
-start_layer=0
-#start_layer=14
-end_layer=23
-#end_layer=14
+#start_layer=0
+start_layer=14
+end_layer=14
+#end_layer=23
 layers=
 for ((i=start_layer; i<=end_layer; i++)); do
     layers=$layers,$i
@@ -34,8 +34,8 @@ label=score
 model=alst
 #model=alst_encdec
 if [ $model = alst_encdec ]; then
-    depth=1
-    lr=1e-4
+    depth=2
+    lr=1e-3
 else
     depth=2
     lr=1e-3
@@ -46,8 +46,8 @@ embed_dim=512
 
 tgt_dir=$(pwd)/../data/als
 
-stage=2
-stop_stage=2
+stage=1
+stop_stage=1
 echo stage 0: Speech feature extraction
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     bash scripts/prepare_als.sh $tgt_dir $layers $am_name $pooling $label
@@ -55,7 +55,7 @@ fi
 
 echo stage 1: Train and test ALS predictor
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-${pooling}-layers${start_layer}_${end_layer}-with_$label
+    exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-${pooling}-layers${start_layer}_${end_layer}-with_${label}
     python traintest.py --data-dir $tgt_dir/with_$label/$am_name/feat_$pooling \
     --layers $layers --lr $lr --exp-dir $exp_dir --depth $depth \
     --batch_size $batch_size --embed_dim $embed_dim --model $model --am $am_name  

@@ -9,7 +9,7 @@ from pathlib import Path
 def convert_path_to_id(wav_path):
     spk = wav_path.parent.name
     date = wav_path.stem.split('_')[0]
-    year = date[0:4]
+    year = date[:4]
     month_day = date[4:8]
     hr_min_sec = date[8:]
     new_date = month_day+year+hr_min_sec

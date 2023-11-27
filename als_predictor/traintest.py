@@ -110,7 +110,7 @@ def train(audio_model, train_loader, test_loader, args):
         print('start validation', flush=True)
         tr_loss, tr_prec, tr_rec, tr_micro_f1, tr_macro_f1, tr_confusion = validate(audio_model, train_loader, args, -1)
         te_loss, te_prec, te_rec, te_micro_f1, te_macro_f1, te_confusion = validate(audio_model, test_loader, args, best_loss)
-        if te_loss < best_loss:
+        if te_macro_f1 < best_macro_f1:
             best_loss = te_loss
             best_macro_f1 = te_macro_f1
             best_epoch = epoch
@@ -181,12 +181,10 @@ def validate(audio_model, val_loader, args, best_loss):
         )
         confusion = confusion_matrix(gold_labels, pred_labels)
 
-        loss /= len(val_loader)
-        if loss < best_loss:
-            print('new best loss {:.3f}, now saving predictions.'.format(loss), flush=True)
-            if not (exp_dir / 'preds' / 'gold_als_label.npy').exists():
-                np.save(exp_dir / 'preds' / 'gold_als_label.npy', gold_labels)
-            np.save(exp_dir / 'preds' / 'pred_als_label.npy', pred_labels)
+        loss /= len(val_loader)        
+        if not (exp_dir / 'preds' / 'gold_als_label.npy').exists():
+            np.save(exp_dir / 'preds' / 'gold_als_label.npy', gold_labels)
+        np.save(exp_dir / 'preds' / 'pred_als_label.npy', pred_labels)
 
     return loss, precision, recall, micro_f1, macro_f1, confusion
 

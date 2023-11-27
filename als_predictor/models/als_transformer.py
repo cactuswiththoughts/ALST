@@ -205,11 +205,12 @@ class ALSDecoder(nn.Module):
         self.tgt_embed = nn.Embedding(input_dim, embed_dim)
 
         # Transformer decode blocks
-        self.blocks = nn.ModuleList([DecodeBlock(dim=embed_dim, num_heads=1) for i in range(depth)])
+        self.blocks = nn.ModuleList([Block(dim=embed_dim, num_heads=1) for i in range(depth)])
         self.pos_embed = nn.Parameter(torch.zeros(1, max_len, self.embed_dim))
         trunc_normal_(self.pos_embed, std=.02)
         
         # for ALS classification
+        # self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class))
         self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class))
 
     # x shape in [batch_size, sequence_len, feat_dim]
@@ -220,7 +221,7 @@ class ALSDecoder(nn.Module):
         # sequence len
         L = x.shape[1]
         # memory len
-        T = memory.shape[1]
+        # T = memory.shape[1]
         # 0 is the padding symbol, 1 is the start symbol
         x[x < 0] = -2
         x = self.tgt_embed(x + 2)
@@ -228,15 +229,15 @@ class ALSDecoder(nn.Module):
         x = x + self.pos_embed[:, :L]
         
         # forward to the Transformer decoder
-        if mask is None:
-            src_mask = memory.new_ones(B, L, T)
-        else:
-            mask = mask.float()
-            src_mask = (memory.new_ones(B, L, 1) @ mask.unsqueeze(-2)) > 0
+        #if mask is None:
+        #    src_mask = memory.new_ones(B, L, T)
+        #else:
+        #    mask = mask.float()
+        #    src_mask = (memory.new_ones(B, L, 1) @ mask.unsqueeze(-2)) > 0
         tgt_mask = subsequent_mask(L).to(x.device)
         for blk in self.blocks:
-            x = blk(x, memory, src_mask, tgt_mask)
-
+            x = blk(x, tgt_mask)
+        x = x + memory
         o = self.mlp_head(x)
 
         return o
@@ -332,8 +333,8 @@ class ALSEncDecTransformer(nn.Module):
         x = self.encoder.layer_results['encoder_last_layer']
         ys = [x.new_ones(x.shape[0]).long()]
         for i in range(max_len):
-            y = torch.stack(ys, dim=1)
-            logit = self.decoder(y, x, mask=mask)
+            y = torch.stack(ys, dim=1)[:, i:i+1]
+            logit = self.decoder(y, x[:, i:i+1], mask=mask)
             ys.append(logit.argmax(-1)[:, -1])
  
         ys = torch.stack(ys[1:], dim=-1)

@@ -58,6 +58,7 @@ with open(save_dir / f'{args.split}.ids', 'w') as id_f,\
         id_seq = []
         feat_seq = []
         label_seq = []
+        seq_lens = []
         for date, idx, label in sorted(spk_info[spk]):
             offset = offsets[idx]
             size = sizes[idx]
@@ -67,8 +68,9 @@ with open(save_dir / f'{args.split}.ids', 'w') as id_f,\
             id_seq.append(f'{spk}_{date}_{label}')
             feat_seq.append(feat)
             label_seq.append(label)
+            seq_lens.append(str(len(feat)))
         npaa.append(np.concatenate(feat_seq))
 
-        print(len(feat_seq), file=len_f)
+        print(' '.join(seq_lens), file=len_f)
         print(' '.join(id_seq), file=id_f)
         print(' '.join(label_seq), file=score_f)       
