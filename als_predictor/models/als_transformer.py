@@ -7,6 +7,7 @@ import math
 # import warnings
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 # code from the t2t-vit paper
@@ -253,6 +254,9 @@ class ALSTransformer(nn.Module):
         self.n_weights = n_weights
         self.weighted_sum = nn.Linear(n_weights, 1)
 
+        # Phone projection, assume there are 1 padding token (0) + 26 phns (use characters for now)
+        self.phn_proj = nn.Embedding(27, input_dim)
+
         # Transformer encode blocks
         self.blocks = nn.ModuleList([Block(dim=embed_dim, num_heads=1) for i in range(depth)])
         
@@ -268,7 +272,7 @@ class ALSTransformer(nn.Module):
         self.blocks[-1].register_forward_hook(self.get_activation('encoder_last_layer'))
 
     # x shape in [batch_size, sequence_len, feat_dim, n_layers]
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, pool_mask=None, phns=None):
         # batch size
         B = x.shape[0]
         # sequence len
@@ -292,8 +296,15 @@ class ALSTransformer(nn.Module):
         # forward to the Transformer encoder
         for blk in self.blocks:
             x = blk(x, mask=attn_mask)
+ 
+        if phns is not None:
+            phn_embs = self.phn_proj(phns)
+            x = x + phn_embs
         
         o = self.mlp_head(x)
+       
+        if pool_mask is not None:
+            o = pool_mask @ o
         
         return o
 
@@ -315,7 +326,7 @@ class ALSEncDecTransformer(nn.Module):
         )
 
     # x shape in [batch_size, sequence_len, feat_dim, n_layers]
-    def forward(self, x, tgt=None, mask=None, max_len=120):
+    def forward(self, x, tgt=None, mask=None, pool_mask=None, phns=None, max_len=120):
         # Prepend the start symbol to the target labels
         if tgt is None:
             return self.decode(x, max_len, mask=mask)
@@ -323,7 +334,7 @@ class ALSEncDecTransformer(nn.Module):
             tgt = torch.cat(
                 [tgt.new_ones(x.shape[0], 1), tgt[:, :-1]], dim=1
             )
-        _ = self.encoder(x, mask=mask)
+        _ = self.encoder(x, mask=mask, pool_mask=pool_mask, phns=phns)
         x = self.encoder.layer_results['encoder_last_layer']
         o = self.decoder(tgt, x, mask=mask)
         return o
@@ -339,3 +350,37 @@ class ALSEncDecTransformer(nn.Module):
  
         ys = torch.stack(ys[1:], dim=-1)
         return ys
+
+
+# Multi-class encoder decoder classifier of ALS disease progression
+class ALSLinear(nn.Module):
+    def __init__(self, input_dim, n_class=5, n_weights=24):
+        super().__init__()        
+        self.n_weights = n_weights
+
+        # Weighted-sum layer for multi-layer input features
+        self.n_weights = n_weights
+        self.weighted_sum = nn.Linear(n_weights, 1)
+
+        # Classifier
+        self.proj = nn.Linear(input_dim, n_class)
+
+        # Phone projection, assume there are 1 padding token (0) + 26 phns (use characters for now)
+        self.phn_proj = nn.Embedding(27, input_dim)
+
+    def forward(self, x, mask=None, pool_mask=None, phns=None):
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)
+        else:
+            x = self.weighted_sum(x).squeeze(-1)
+
+        if phns is not None:
+            phn_embs = self.phn_proj(phns)
+            x = x + phn_embs
+
+        o = self.proj(x)
+        
+        if pool_mask is not None:
+            o = pool_mask @ o
+
+        return o

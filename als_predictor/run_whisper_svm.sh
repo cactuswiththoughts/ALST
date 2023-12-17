@@ -35,20 +35,7 @@ pooling=mean+concat
 #label=text
 #label=score
 label=vieira
-#model=alst
-#model=linear
-model=alst_encdec
-if [ $model = alst_encdec ]; then
-    depth=2
-    lr=1e-4
-else
-    depth=2
-    lr=1e-4
-fi
-batch_size=25
-embed_dim=512
-# embed_dim=24
-
+model=linear_svc
 tgt_dir=$(pwd)/../data/als
 if [ $label = vieira ]; then
     setup=vieira
@@ -65,28 +52,21 @@ fi
 
 echo stage 1: Train and test ALS predictor
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${start_layer}_${end_layer}-${pooling}-${setup}-with_mask
-    python traintest.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
-    --layers $layers --lr $lr --exp-dir $exp_dir --depth $depth \
-    --batch_size $batch_size --embed_dim $embed_dim --model $model --am $am_name 
-
- #   exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${start_layer}_${end_layer}-${pooling}-marco-with_mask
- #   python traintest.py --data-dir $tgt_dir/marco/${am_name}/feat_${pooling} \
- #   --layers $layers --lr $lr --exp-dir $exp_dir --depth $depth \
- #   --batch_size $batch_size --embed_dim $embed_dim --model $model --am $am_name 
+    exp_dir=../exp/${model}-${am_name}-layer${start_layer}_${end_layer}-${pooling}-${setup}-with_mask
+    python traintest_svm.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
+    --layers $layers --exp-dir $exp_dir --am $am_name
 fi
 
 echo stage 2: Train and test ALS predictor using different AM layers
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     for layer in $(seq $start_layer $end_layer); do
-        exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${layer}-${pooling}-${setup}-with_mask
-        python traintest.py --data-dir $tgt_dir/$setup/$am_name/feat_${pooling} \
-        --layers $layer --lr $lr --exp-dir $exp_dir --depth $depth \
-        --batch_size $batch_size --embed_dim $embed_dim --model $model --am $am_name
+	exp_dir=../exp/${model}-${am_name}-layer${layer}-${pooling}-${setup}-with_mask
+        python traintest_svm.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
+        --layers $layer --exp-dir $exp_dir --am $am_name
     done
 
     python scripts/extract_layerwise_results.py \
-        --exp-name ../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer{}-${pooling}-${setup}-with_mask \
+        --exp-name ../exp/${model}-${am_name}-layer{}-${pooling}-${setup}-with_mask \
         --layers $layers \
         --out_file ${model}_${am_name}_${setup}_layerwise_results.csv
 fi

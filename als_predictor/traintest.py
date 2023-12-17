@@ -34,7 +34,9 @@ parser.add_argument("--embed_dim", type=int, default=512, help="predictor embedd
 parser.add_argument("--depth", type=int, default=1, help="depth of the predictor")
 parser.add_argument("--am", type=str, default='wav2vec2_big_960h')
 parser.add_argument("--model", type=str, default='alst')
+parser.add_argument("--mse_weight", type=float, default=0.0)
 parser.add_argument("--no-longitudinal", action='store_true', help='not use longitudinal information')
+parser.add_argument("--use-phn-label", action='store_true', help='use phoneme labels as inputs')
 
 # just to generate the header for the result.csv
 def gen_result_header():
@@ -73,6 +75,8 @@ def train(audio_model, train_loader, test_loader, args):
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, list(range(20, 100, 5)), gamma=0.5, last_epoch=-1)
  
     loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
+    mse_loss_fn = nn.MSELoss()
+    mse_weight = args.mse_weight
 
     print("current #steps=%s, #epochs=%s" % (global_step, epoch), flush=True)
     print("start training...", flush=True)
@@ -80,11 +84,15 @@ def train(audio_model, train_loader, test_loader, args):
     
     for epoch in range(args.n_epochs):
         audio_model.train()
-        for i, (audio_input, als_label, sizes, label_sizes) in enumerate(train_loader):
+        for i, (audio_input, als_label, sizes, label_sizes, pool_mask, phn_label) in enumerate(train_loader):
             audio_input = audio_input.to(device, non_blocking=True)
             als_label = als_label.to(device, non_blocking=True)
             sizes = sizes.to(device, non_blocking=True)
             label_sizes = label_sizes.to(device, non_blocking=True)
+            pool_mask = pool_mask.to(device, non_blocking=True)
+            phn_label = phn_label.to(device, non_blocking=True)
+            if not args.use_phn_label:
+                phn_label = None
 
             # warmup
             warm_up_step = 100
@@ -97,9 +105,9 @@ def train(audio_model, train_loader, test_loader, args):
             mask = length_to_mask(sizes, max_len=max(sizes))
             label_mask = length_to_mask(label_sizes, max_len=max(label_sizes))
             if args.model == 'alst_encdec':
-                logits = audio_model(audio_input, als_label, mask)
+                logits = audio_model(audio_input, als_label, mask=mask, pool_mask=pool_mask, phns=phn_label)
             else:
-                logits = audio_model(audio_input, mask)
+                logits = audio_model(audio_input, mask=mask, pool_mask=pool_mask, phns=phn_label)
             loss = loss_fn(logits.reshape(-1, logits.size(-1)), als_label.flatten())
             
             optimizer.zero_grad()
@@ -147,19 +155,26 @@ def validate(audio_model, val_loader, args, best_loss):
     loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
     with torch.no_grad():
         loss = 0.0
-        for i, (audio_input, als_label, sizes, label_sizes) in enumerate(val_loader):
+        for i, (audio_input, als_label, sizes, label_sizes, pool_mask, phn_label) in enumerate(val_loader):
             audio_input = audio_input.to(device)
             als_label = als_label.to(device)
             sizes = sizes.to(device, non_blocking=True)
             label_sizes = label_sizes.to(device, non_blocking=True)
+            pool_mask = pool_mask.to(device, non_blocking=True)
+            phn_label = phn_label.to(device, non_blocking=True)
+            if not args.use_phn_label:
+                phn_label = None
 
             mask = length_to_mask(sizes, max_len=max(sizes))
             label_mask = length_to_mask(label_sizes, max_len=max(label_sizes))
 
             if args.model == 'alst_encdec':
-                pred_label = audio_model(audio_input, max_len=als_label.size(1), mask=mask)
+                pred_label = audio_model(
+                    audio_input, max_len=als_label.size(1), mask=mask,
+                    pool_mask=pool_mask, phns=phn_label,
+                )
             else:
-                logits = audio_model(audio_input, mask=mask)
+                logits = audio_model(audio_input, mask=mask, pool_mask=pool_mask, phns=phn_label)
                 pred_label = logits.argmax(-1)
                 # loss += loss_fn(logits.view(-1, logits.size(-1)), als_label).cpu().detach().item()
 
@@ -196,7 +211,6 @@ am = args.am
 feat_dim = {
     'w2v2_big_960h': 1024, 
     'w2v2_small_960h': 512,
-    'w2v2_big_960h_gop': 64,
     'whisper_large-v1': 1280,
     'whisper_large-v2': 1280,
     'whisper_medium': 1024, 
@@ -208,13 +222,17 @@ n_weights = len(data_dirs)
 tr_dataset = ALSFeatureDataset([osp.join(data_dir, 'train') for data_dir in data_dirs], longitudinal=(not args.no_longitudinal))
 tr_dataloader = DataLoader(tr_dataset, collate_fn=tr_dataset.collater, batch_size=args.batch_size, shuffle=True)
 te_dataset = ALSFeatureDataset([osp.join(data_dir, 'test') for data_dir in data_dirs], longitudinal=(not args.no_longitudinal))
-te_dataloader = DataLoader(te_dataset, collate_fn=te_dataset.collater, batch_size=5000, shuffle=False)
+te_dataloader = DataLoader(te_dataset, collate_fn=te_dataset.collater, batch_size=50, shuffle=False)
 max_len = max(tr_dataset.max_size, te_dataset.max_size)
 print(f'maximal sequence length: {max_len}')
 
 if args.model == 'alst_encdec':
     audio_model = ALSEncDecTransformer(embed_dim=args.embed_dim, depth=args.depth, input_dim=input_dim, max_len=max_len, n_weights=n_weights)
+elif args.model == 'linear':
+    audio_model = ALSLinear(input_dim, n_weights=n_weights)
 else:
     audio_model = ALSTransformer(embed_dim=args.embed_dim, depth=args.depth, input_dim=input_dim, max_len=max_len, n_weights=n_weights)
+print(args.model)
+print(audio_model)
 
 train(audio_model, tr_dataloader, te_dataloader, args)
