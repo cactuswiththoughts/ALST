@@ -6,14 +6,15 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--exp-name')
-parser.add_argument('--layers')
+parser.add_argument('--hp-name')
+parser.add_argument('--hps')
 parser.add_argument('--out_file')
 
 args = parser.parse_args()
-layers = list(map(int, args.layers.split(',')))
+hps = list(map(float, args.hps.split(',')))
 
 data_dict = {
-    'Layer': layers,
+    args.hp_name: hps,
     'Precision': [],
     'Recall': [],
     'Accuracy': [],
@@ -30,7 +31,7 @@ data_dict = {
     r'Kendall $\tau$ (MSE)': [],
     'Pairwise Accuracy (MSE)': [],
 }
-for l in layers:
+for l in hps:
     exp_dir = Path(args.exp_name.format(l))
     res = pd.read_csv(exp_dir / 'result.csv')
     nrow = len(res['test_macro_f1'])

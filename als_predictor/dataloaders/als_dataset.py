@@ -91,6 +91,7 @@ class ALSFeatureDataset(Dataset):
             offset = 0
             for j, s in enumerate(size):
                 pool_mask[i, j, offset:offset+s] = 1. / s
+                offset += s
 
         if not self.longitudinal:
             padded_feats = padded_feats.view(-1, 1, d)

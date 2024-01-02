@@ -67,11 +67,12 @@ def main():
             print('./', file=f_tsv)
 
             found = 0
+            spks = []
             for wav_id in wav_ids:
                 wav_id = wav_id.strip()
                 if wav_id not in utt2wav:
                     # print(f'ID {wav_id} not found')
-                    print(wav_id)
+                    # print(wav_id)
                     continue
                 wav_path = utt2wav[wav_id]
                 text = ''
@@ -80,10 +81,15 @@ def main():
                         [utt2txt[wav_id][k] for k in sorted(utt2txt[wav_id])]
                     )
                 found += 1
+
+                spk = wav_id.split('_')[1]
+                if not spk in spks:
+                    spks.append(spk)
+
                 print(wav_path, file=f_tsv)
                 print(text, file=f_wrd)
 
-        # print(f'Found {found} out of {len(wav_ids)} {x} wav files')
+        print(f'Found {found} out of {len(wav_ids)} {x} wav files from {len(spks)} patients')
 
 if __name__ == '__main__':
     main()

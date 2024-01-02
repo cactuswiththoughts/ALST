@@ -1,31 +1,22 @@
 #!/bin/bash
-#SBATCH -J als_whisper
-#SBATCH -o logs/%j_als_svm_whisper.out
-#SBATCH -e logs/%j_als_svm_whisper.err
+#SBATCH -J als_w2v2
+#SBATCH -o logs/%j_als_svm_w2v2.out
+#SBATCH -e logs/%j_als_svm_w2v2.err
 #SBATCH -p a5
 #SBATCH --gres=gpu:1
 #SBATCH -n 1
 #SBATCH --qos=regular
 
 source /data/sls/scratch/limingw/miniconda3/etc/profile.d/conda.sh
-PYTHON_VIRTUAL_ENVIRONMENT=/data/sls/scratch/limingw/miniconda3/envs/whisper
+PYTHON_VIRTUAL_ENVIRONMENT=/data/sls/scratch/limingw/miniconda3/envs/fairseq
 conda activate $PYTHON_VIRTUAL_ENVIRONMENT
 export FAIRSEQ_ROOT=/data/sls/scratch/limingw/fairseq-0.12.1
 export ALS_WAV_DIR=/data/sls/scratch/yuangong/dataset/ALS/Voice_Recordings_16k_reorder
 export TRITON_CACHE_DIR=$PYTHON_VIRTUAL_ENVIRONMENT/.triton_cache
 
-#am_name=whisper_medium 
-#am_name=whisper_base 
-am_name=whisper_large-v2
-#start_layer=0
-#start_layer=6
-start_layer=18
-#start_layer=23
-#start_layer=31
-#end_layer=6
-end_layer=18
-#end_layer=23
-#end_layer=31
+am_name=w2v2_big_960h
+start_layer=0
+end_layer=23
 layers=
 for ((i=start_layer; i<=end_layer; i++)); do
     layers=$layers,$i
@@ -62,10 +53,9 @@ fi
 
 echo stage 2: Train and test ALS predictor using different AM layers
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
-    # XXX
     for layer in $(seq $start_layer $end_layer); do
 	    exp_dir=../exp/${model}-${am_name}-layer${layer}-${pooling}-${setup}-with_mask
-        python traintest_svm.py --mode eval --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
+        python traintest_svm.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
         --layers $layer --exp-dir $exp_dir --am $am_name
     done
 
