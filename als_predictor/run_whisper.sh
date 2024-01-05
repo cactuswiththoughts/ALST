@@ -13,17 +13,20 @@ conda activate $PYTHON_VIRTUAL_ENVIRONMENT
 export FAIRSEQ_ROOT=/data/sls/scratch/limingw/fairseq-0.12.1
 export ALS_WAV_DIR=/data/sls/scratch/yuangong/dataset/ALS/Voice_Recordings_16k_reorder
 export TRITON_CACHE_DIR=$PYTHON_VIRTUAL_ENVIRONMENT/.triton_cache
+#export ALIGN_DIR=/data/sls/scratch/nauman/shared/LimingsWork/ALS_EXPS/ALS_model_adapt_dumps__Exp1_modelDownloaded_dataALS__noOOV/out_TextGrids
+export ALIGN_DIR=/data/sls/scratch/nauman/shared/LimingsWork/ALS_EXPS/ALS_model_adapt_dumps__Exp2_modelFHS83Finetuned_dataALS/out_TextGrids
 
 am_name=whisper_medium 
 #am_name=whisper_base 
 #am_name=whisper_large-v2
-start_layer=22
+start_layer=0
 #start_layer=6
 #start_layer=22
+#start_layer=23
 #start_layer=31
 #end_layer=6
 #end_layer=22
-end_layer=22
+end_layer=23
 #end_layer=31
 layers=
 for ((i=start_layer; i<=end_layer; i++)); do
@@ -99,17 +102,24 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 	        --ce_weight $ce_weight --mse_weight $mse_weight
     done
 
-    python scripts/extract_layerwise_results.py \
-        --exp-name ../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer{}-${pooling}-${setup}-with_mask-ce_weight${ce_weight}-mse_weight${mse_weight} \
-        --layers $layers \
-        --out_file ${model}_${am_name}_${setup}_ce-weight${ce_weight}_mse-weight${mse_weight}_layerwise_results.csv
+#    python scripts/extract_layerwise_results.py \
+#        --exp-name ../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer{}-${pooling}-${setup}-with_mask-ce_weight${ce_weight}-mse_weight${mse_weight} \
+#        --layers $layers \
+#        --out_file ${model}_${am_name}_${setup}_ce-weight${ce_weight}_mse-weight${mse_weight}_layerwise_results.csv
 fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
-    exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${start_layer}_${end_layer}-${pooling}-${setup}-with_mask/preds/pred_als_label.npy
+    ce_weight=1.0
+    mse_weight=1.0
+    exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${start_layer}-${pooling}-${setup}-with_mask-ce_weight${ce_weight}-mse_weight${mse_weight}/preds
     echo $exp_dir
     python scripts/extract_scores_vs_days.py \
         --in-path $tgt_dir/$setup/${am_name}/feat_${pooling}/layer0/test.ids \
-        --score-path $exp_dir \
+        --score-path $exp_dir/pred_als_scores.npy \
         --out-path test_${model}_${am_name}_score_vs_days.csv
+
+    python scripts/extract_scores_vs_days.py \
+        --in-path $tgt_dir/$setup/${am_name}/feat_${pooling}/layer0/test.ids \
+        --score-path $exp_dir/gold_als_label.npy \
+        --out-path test_score_vs_days.csv
 fi

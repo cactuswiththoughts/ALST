@@ -16,12 +16,12 @@ export W2V2=/data/sls/scratch/limingw/models/finetuned/wav2vec_big_960h.pt
 export W2V2_ALIGN_DIR=/data/sls/scratch/yuangong/als/w2v_align
 
 am_name=w2v2_big_960h
-#start_layer=0
+start_layer=0
 #start_layer=9
-start_layer=14
+#start_layer=14
 #end_layer=9
-end_layer=14
-#end_layer=23
+#end_layer=14
+end_layer=23
 layers=
 for ((i=start_layer; i<=end_layer; i++)); do
     layers=$layers,$i
@@ -29,13 +29,13 @@ done
 layers=${layers#,}
 echo $layers
 
-#pooling=mean+concat
+pooling=mean+concat
 #pooling=concat
-pooling=phn_segmented_concat
-label=text_align 
+#pooling=phn_segmented_concat
+#label=text_align 
 #label=score
 #label=text
-#label=vieira
+label=vieira
 model=alst
 #model=alst_encdec
 #model=linear
@@ -87,9 +87,10 @@ echo stage 2: Train and test ALS predictor using different AM layers
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     ce_weight=1.0
     mse_weight=1.0
+    # XXX
     for layer in $(seq $start_layer $end_layer); do
         exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${layer}-${pooling}-$setup-with_mask-ce_weight${ce_weight}-mse_weight${mse_weight}
-        python traintest.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
+        python traintest.py --mode eval --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
         --layers $layer --lr $lr --exp-dir $exp_dir --depth $depth \
         --batch_size $batch_size --embed_dim $embed_dim --model $model --am $am_name \
         --ce_weight $ce_weight --mse_weight $mse_weight

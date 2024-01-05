@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from scripts.compute_rank_scores import compute_rank_scores
+from scripts.compute_auc import compute_auc
 np.random.seed(42)
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
@@ -46,6 +47,7 @@ def gen_result_header():
         'test_spearmanr',
         'test_kendalltau',
         'test_pairwise_acc',
+        'test_auc',
     ]
     return header 
 
@@ -88,7 +90,7 @@ print(X_tr.shape, X_te.shape)
 assert (X_tr.shape[0] == Y_tr.shape[0]) and (X_te.shape[0] == Y_te.shape[0])
 
 if args.model == 'svc':
-    svm = SVC()
+    svm = SVC(kernel='linear', probability=True)
 elif args.model == 'svr':
     svm = SVR()
     Y_tr = Y_tr.astype(float)
@@ -96,8 +98,14 @@ elif args.model == 'linear_svc':
     svm = LinearSVC()
 else:
     svm = SGDClassifier()
+
 svm.fit(X_tr, Y_tr)
+
 Y_te_pred = svm.predict(X_te)
+proba = None
+if args.model == 'svc':
+    proba = svm.predict_proba(X_te)
+
 if args.model == 'svr':
     Y_te_pred = np.minimum(np.maximum(np.round(Y_te_pred), 0), 4)
 
@@ -105,14 +113,17 @@ _, _, micro_f1, _ = precision_recall_fscore_support(Y_te, Y_te_pred, average='mi
 precision, recall, macro_f1, _ = precision_recall_fscore_support(Y_te, Y_te_pred, average='macro')
 spearmanr, kendalltau, pairwise_acc = compute_rank_scores(
     Y_te, Y_te_pred, label_size_list)
+auc = 0
+if proba is not None:
+    auc = compute_auc(Y_te, proba)
 confusion = confusion_matrix(Y_te, Y_te_pred)
 
 exp_dir = Path(args.exp_dir)
 exp_dir.mkdir(parents=True, exist_ok=True)
-result = np.zeros([1, 15])
+result = np.zeros([1, 16])
 result[0, 7:11] = [precision, recall, micro_f1, macro_f1]
-result[0, 12:15] = [spearmanr, kendalltau, pairwise_acc]
+result[0, 12:16] = [spearmanr, kendalltau, pairwise_acc, auc]
 header = ','.join(gen_result_header())
 np.savetxt(exp_dir / 'confusion.csv', confusion, fmt='%d', delimiter=',')
 np.savetxt(exp_dir / 'result.csv', result, fmt='%.4f', delimiter=',', header=header, comments='')
-print(f'Precision: {precision:.3f}, Recall: {recall:.3f}, Micro F1: {micro_f1:.3f}, Macro F1: {macro_f1:.3f}, Spearman Corr.:{spearmanr:.3f}, Kendall Corr.:{kendalltau:.3f}, Pairwise Acc.:{pairwise_acc:.3f}')
+print(f'Precision: {precision:.3f}, Recall: {recall:.3f}, Micro F1: {micro_f1:.3f}, Macro F1: {macro_f1:.3f}, AUC: {auc:.3f}, Spearman Corr.: {spearmanr:.3f}, Kendall Corr.: {kendalltau:.3f}, Pairwise Acc.: {pairwise_acc:.3f}')

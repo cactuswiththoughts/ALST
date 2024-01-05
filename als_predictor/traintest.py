@@ -8,12 +8,14 @@ import sys
 import os
 import os.path as osp
 from pathlib import Path
-from sklearn.metrics import precision_recall_fscore_support, confusion_matrix 
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
+from sklearn.preprocessing import LabelBinarizer
 import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from scripts.compute_rank_scores import compute_rank_scores
+from scripts.compute_auc import compute_auc
 np.random.seed(42)
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
@@ -58,6 +60,7 @@ def gen_result_header():
         'test_spearmanr', 
         'test_kendalltau',
         'test_pairwise_acc',
+        'test_auc',
         'test_precision_mse',
         'test_recall_mse',
         'test_micro_f1_mse', 
@@ -105,7 +108,7 @@ def train(audio_model, train_loader, test_loader, args):
 
     print("current #steps=%s, #epochs=%s" % (global_step, epoch), flush=True)
     print("start training...", flush=True)
-    result = np.zeros([args.n_epochs, 23])
+    result = np.zeros([args.n_epochs, 24])
     
     for epoch in range(args.n_epochs):
         audio_model.train()
@@ -156,7 +159,7 @@ def train(audio_model, train_loader, test_loader, args):
         (tr_rec, tr_rec_mse),\
         (tr_micro_f1, tr_micro_f1_mse),\
         (tr_macro_f1, tr_macro_f1_mse),\
-        _, _, _, tr_confusion = validate(audio_model, train_loader, args, -1)
+        _, _, _, _, tr_confusion = validate(audio_model, train_loader, args, -1)
         te_loss,\
         (te_prec, te_prec_mse),\
         (te_rec, te_rec_mse),\
@@ -165,7 +168,7 @@ def train(audio_model, train_loader, test_loader, args):
         (te_spearmanr, te_spearmanr_mse),\
         (te_kendalltau, te_kendalltau_mse),\
         (te_pairwise_acc, te_pairwise_acc_mse),\
-        te_confusion = validate(audio_model, test_loader, args, best_loss)
+        te_auc, te_confusion = validate(audio_model, test_loader, args, best_loss)
         if te_macro_f1 > best_macro_f1:
             best_loss = te_loss
             best_macro_f1 = te_macro_f1
@@ -176,12 +179,12 @@ def train(audio_model, train_loader, test_loader, args):
             best_macro_f1_mse = te_macro_f1_mse
             torch.save(audio_model.state_dict(), exp_dir / 'models/best_audio_model_mse.pth')
 
-        print('Precision: {:.3f}, Recall: {:.3f}, Micro F1: {:.3f}, Macro F1: {:.3f}, Best Macro F1: {:.3f}'.format(te_prec, te_rec, te_micro_f1, te_macro_f1, best_macro_f1), flush=True)
-        print('(MSE) Precision: {:.3f}, Recall: {:.3f}, Micro F1: {:.3f}, Macro F1: {:.3f}, Best Macro F1: {:.3f}'.format(te_prec_mse, te_rec_mse, te_micro_f1_mse, te_macro_f1_mse, best_macro_f1_mse), flush=True)
+        print(f'Precision: {te_prec:.3f}, Recall: {te_rec:.3f}, Micro F1: {te_micro_f1:.3f}, Macro F1: {te_macro_f1:.3f}, AUC: {te_auc:.3f}, Spearman Corr.: {te_spearmanr:.3f}, Kendall Corr.: {te_kendalltau:.3f}, Pairwise Acc.: {te_pairwise_acc:.3f}, Best Macro F1: {best_macro_f1:.3f}', flush=True)
+        print(f'(MSE) Precision: {te_prec_mse:.3f}, Recall: {te_rec_mse:.3f}, Micro F1: {te_micro_f1_mse:.3f}, Macro F1: {te_macro_f1_mse:.3f}, Spearman Corr.: {te_spearmanr_mse:.3f}, Kendall Corr.: {te_kendalltau_mse:.3f}, Pairwise Acc.: {te_pairwise_acc_mse:.3f}, Best Macro F1: {best_macro_f1_mse:.3f}', flush=True)
 
         result[epoch, :6] = [epoch, tr_loss, tr_prec, tr_rec, tr_micro_f1, tr_macro_f1]
-        result[epoch, 6:15] = [te_loss, te_prec, te_rec, te_micro_f1, te_macro_f1, best_macro_f1, te_spearmanr, te_kendalltau, te_pairwise_acc]
-        result[epoch, 15:23] = [te_prec_mse, te_rec_mse, te_micro_f1_mse, te_macro_f1_mse, best_macro_f1_mse, te_spearmanr_mse, te_kendalltau_mse, te_pairwise_acc_mse]
+        result[epoch, 6:16] = [te_loss, te_prec, te_rec, te_micro_f1, te_macro_f1, best_macro_f1, te_spearmanr, te_kendalltau, te_pairwise_acc, te_auc]
+        result[epoch, 16:24] = [te_prec_mse, te_rec_mse, te_micro_f1_mse, te_macro_f1_mse, best_macro_f1_mse, te_spearmanr_mse, te_kendalltau_mse, te_pairwise_acc_mse]
 
         header = ','.join(gen_result_header())
         np.savetxt(exp_dir / 'result.csv', result, fmt='%.4f', delimiter=',', header=header, comments='')
@@ -203,6 +206,7 @@ def validate(audio_model, val_loader, args, best_loss):
 
     confusion = np.zeros([5, 5])
     pred_labels = []
+    pred_probs = []
     pred_scores = []
     pred_labels_mse = []
     gold_labels = []
@@ -224,7 +228,8 @@ def validate(audio_model, val_loader, args, best_loss):
 
             mask = length_to_mask(sizes, max_len=max(sizes))
             label_mask = length_to_mask(label_sizes, max_len=max(label_sizes))
-
+            
+            logits = None
             scores = None
             if args.model == 'alst_encdec':
                 pred_label, scores = audio_model(
@@ -251,25 +256,30 @@ def validate(audio_model, val_loader, args, best_loss):
             pred_labels.extend(pred_label.detach().cpu().tolist())
             gold_labels.extend(gold_label.detach().cpu().tolist())
             label_size_list.extend(label_sizes.detach().cpu().tolist())
+            if logits is not None: 
+                pred_prob = torch.softmax(logits, dim=-1).reshape(-1, 5)
+                pred_probs.extend(pred_prob.detach().cpu().tolist())
+
             if scores is not None:
                 scores = scores.flatten()
                 pred_scores.extend(scores.detach().cpu().tolist())
                 pred_label_mse = pred_label_mse.flatten()
                 pred_labels_mse.extend(pred_label_mse.detach().cpu().tolist())
-            else:
-                scores = torch.mm(
-                    torch.softmax(logits, dim=-1),
-                    torch.arange(5).unsqueeze(-1),
-                ).flatten()
-                pred_scores.extend(scores.detach().cpu().tolist()) 
 
-        pred_scores = np.asarray(pred_scores)
         pred_labels = np.asarray(pred_labels)
         gold_labels = np.asarray(gold_labels)
         keep = gold_labels != -1
-        pred_scores = pred_scores[keep]
         pred_labels = pred_labels[keep]
         gold_labels = gold_labels[keep]
+        if len(pred_scores):
+            pred_scores = np.asarray(pred_scores)
+            pred_scores = pred_scores[keep]
+
+        auc = 0
+        if len(pred_probs):
+            pred_probs = np.asarray(pred_probs)
+            pred_probs = pred_probs[keep]
+            auc = compute_auc(gold_labels, pred_probs)
 
         _, _, micro_f1, _ = precision_recall_fscore_support(
             gold_labels, pred_labels, average='micro',
@@ -282,9 +292,11 @@ def validate(audio_model, val_loader, args, best_loss):
         confusion = confusion_matrix(gold_labels, pred_labels)
 
         mse_loss /= len(val_loader)
-        if not (exp_dir / 'preds' / 'gold_als_label.npy').exists():
-            np.save(exp_dir / 'preds' / 'gold_als_label.npy', gold_labels)
+        #if not (exp_dir / 'preds' / 'gold_als_label.npy').exists():
+        np.save(exp_dir / 'preds' / 'gold_als_label.npy', gold_labels)
         np.save(exp_dir / 'preds' / 'pred_als_label.npy', pred_labels)
+        if len(pred_scores):
+            np.save(exp_dir / 'preds' / 'pred_als_scores.npy', pred_scores)
 
         micro_f1_mse, precision_mse, recall_mse, macro_f1_mse, spearmanr_mse, kendalltau_mse, pairwise_acc_mse = 0., 0., 0., 0., 0., 0., 0.
         if len(pred_labels_mse):
@@ -298,12 +310,12 @@ def validate(audio_model, val_loader, args, best_loss):
             )
             spearmanr_mse, kendalltau_mse, pairwise_acc_mse = compute_rank_scores(
                 gold_labels, pred_labels_mse, label_size_list)
-            # if macro_f1_mse > macro_f1:
-            confusion = confusion_matrix(gold_labels, pred_labels_mse)
+            if macro_f1_mse > macro_f1:
+                confusion = confusion_matrix(gold_labels, pred_labels_mse)
 
             np.save(exp_dir / 'preds' / 'pred_als_label_mse.npy', pred_labels)
     np.savetxt(exp_dir / 'confusion.csv', confusion, fmt='%d', delimiter=',')
-    return mse_loss, (precision, precision_mse), (recall, recall_mse), (micro_f1, micro_f1_mse), (macro_f1, macro_f1_mse), (spearmanr, spearmanr_mse), (kendalltau, kendalltau_mse), (pairwise_acc, pairwise_acc_mse), confusion
+    return mse_loss, (precision, precision_mse), (recall, recall_mse), (micro_f1, micro_f1_mse), (macro_f1, macro_f1_mse), (spearmanr, spearmanr_mse), (kendalltau, kendalltau_mse), (pairwise_acc, pairwise_acc_mse), auc, confusion
 
 args = parser.parse_args()
 
@@ -340,7 +352,7 @@ print(audio_model)
 if args.mode == 'train':
     train(audio_model, tr_dataloader, te_dataloader, args)
 else:
-    exp_dir = Path(args.exp_dir)
+    exp_dir = Path(args.exp_dir) 
     audio_model = nn.DataParallel(audio_model)
     audio_model.load_state_dict(torch.load(exp_dir / 'models/best_audio_model_mse.pth'))
     te_loss,\
@@ -351,15 +363,14 @@ else:
     (te_spearmanr, te_spearmanr_mse),\
     (te_kendalltau, te_kendalltau_mse),\
     (te_pairwise_acc, te_pairwise_acc_mse),\
-    te_confusion = validate(audio_model, te_dataloader, args, -1)
-    print('Precision: {:.3f}, Recall: {:.3f}, Micro F1: {:.3f}, Macro F1: {:.3f}, Best Macro F1: {:.3f}'.format(te_prec, te_rec, te_micro_f1, te_macro_f1, te_macro_f1), flush=True)
-    print('(MSE) Precision: {:.3f}, Recall: {:.3f}, Micro F1: {:.3f}, Macro F1: {:.3f}, Best Macro F1: {:.3f}'.format(te_prec_mse, te_rec_mse, te_micro_f1_mse, te_macro_f1_mse, te_macro_f1_mse), flush=True)
+    te_auc, te_confusion = validate(audio_model, te_dataloader, args, -1)
 
-    result = np.zeros((1, 23))
-    result[0, 6:15] = [te_loss, te_prec, te_rec, te_micro_f1, te_macro_f1, te_macro_f1, te_spearmanr, te_kendalltau, te_pairwise_acc]
-    result[0, 15:23] = [te_prec_mse, te_rec_mse, te_micro_f1_mse, te_macro_f1_mse, te_macro_f1_mse, te_spearmanr_mse, te_kendalltau_mse, te_pairwise_acc_mse] 
-
+    result = np.zeros([1, 24])
+    result[0, 6:16] = [te_loss, te_prec, te_rec, te_micro_f1, te_macro_f1, te_macro_f1, te_spearmanr, te_kendalltau, te_pairwise_acc, te_auc]
+    result[0, 16:24] = [te_prec_mse, te_rec_mse, te_micro_f1_mse, te_macro_f1_mse, te_macro_f1_mse, te_spearmanr_mse, te_kendalltau_mse, te_pairwise_acc_mse]
     header = ','.join(gen_result_header())
     np.savetxt(exp_dir / 'result.csv', result, fmt='%.4f', delimiter=',', header=header, comments='')
-    np.savetxt(exp_dir / 'confusion.csv', te_confusion, fmt='%d', delimiter=',')
+
+    print(f'Precision: {te_prec:.3f}, Recall: {te_rec:.3f}, Micro F1: {te_micro_f1:.3f}, Macro F1: {te_macro_f1:.3f}, AUC: {te_auc:.3f}, Spearman Corr.: {te_spearmanr:.3f}, Kendall Corr.: {te_kendalltau:.3f}, Pairwise Acc.: {te_pairwise_acc:.3f}', flush=True)
+    print(f'(MSE) Precision: {te_prec_mse:.3f}, Recall: {te_rec_mse:.3f}, Micro F1: {te_micro_f1_mse:.3f}, Macro F1: {te_macro_f1_mse:.3f}, Spearman Corr.: {te_spearmanr_mse:.3f}, Kendall Corr.: {te_kendalltau_mse:.3f}, Pairwise Acc.: {te_pairwise_acc_mse:.3f}', flush=True)
     print('-------------------validation finished-------------------', flush=True)

@@ -28,7 +28,8 @@ pooling=mean+concat
 #label=text
 #label=score
 label=vieira
-model=linear_svc
+model=svc
+#model=linear_svc
 #model=svr
 tgt_dir=$(pwd)/../data/als
 if [ $label = vieira ]; then
@@ -48,7 +49,7 @@ echo stage 1: Train and test ALS predictor
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     exp_dir=../exp/${model}-${am_name}-layer${start_layer}_${end_layer}-${pooling}-${setup}-with_mask
     python traintest_svm.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
-    --layers $layers --exp-dir $exp_dir --am $am_name
+    --layers $layers --exp-dir $exp_dir --am $am_name --model $model
 fi
 
 echo stage 2: Train and test ALS predictor using different AM layers
@@ -56,7 +57,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     for layer in $(seq $start_layer $end_layer); do
 	    exp_dir=../exp/${model}-${am_name}-layer${layer}-${pooling}-${setup}-with_mask
         python traintest_svm.py --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
-        --layers $layer --exp-dir $exp_dir --am $am_name
+        --layers $layer --exp-dir $exp_dir --am $am_name --model $model
     done
 
     python scripts/extract_layerwise_results.py \
