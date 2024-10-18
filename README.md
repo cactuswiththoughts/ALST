@@ -1,4 +1,5 @@
 # Automatic Prediction of Amyotrophic Lateral Sclerosis Progression using Longitudinal Speech Transformer
+<div align="middle"><img src="interspeech2024_alst.png" width="500"/></div>
 
 *Amyotrophic Lateral Sclerosis Transformer* (ALST) is a neural network-based predictor of amyotrophic lateral sclerosis (ALS) progression leveraging both patient voice and longitudinal information.
 If you find this project useful, please consider citing our [paper](https://arxiv.org/pdf/2406.18625):
