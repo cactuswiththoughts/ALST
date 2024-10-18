@@ -13,9 +13,9 @@ If you find this project useful, please consider citing our [paper](https://arxi
 
 ## How to run it
 ### Key dependencies
-torch >= 1.13.1
-[fairseq](https://github.com/pytorch/fairseq) >= 1.0.0 (for wav2vec 2.0 based models only)
-[openai-whisper](https://github.com/openai/whisper) >= 20231117
+- torch >= 1.13.1
+- [fairseq](https://github.com/pytorch/fairseq) >= 1.0.0 (for wav2vec 2.0 based models only)
+- [openai-whisper](https://github.com/openai/whisper) >= 20231117
 
 ### Data preparation
 To obtain the ALS data used for training, please contact [ALS-TDI](https://www.als.net/) and use the split provided in data/. For inference using your own data, create a directory $tgt_dir containing the following files:
