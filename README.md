@@ -57,3 +57,4 @@ where $layers is a comma-separated list of layer numbers of the backbone, e.g. W
   python traintest.py --mode eval --data-dir $tgt_dir/whisper-large-v2/feat_mean+concat \
     --exp-dir ./exp/alst_whisper-large-v2_seed32 --batch_size 16 --model alst --am whisper-large-v2 \
 ~~~~
+Please feel free to try checkpoints with other backbones provided in this repo as well. 
