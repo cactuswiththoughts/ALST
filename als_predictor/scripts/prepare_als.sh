@@ -10,8 +10,8 @@ if [ $label = vieira ]; then
 else
     tgt_dir=$tgt_dir/with_$label
 fi
-stage=5
-stop_stage=6
+stage=2
+stop_stage=2
 
 if [ ! -d $tgt_dir ]; then 
     mkdir -p $tgt_dir 
@@ -36,7 +36,7 @@ fi
 
 echo prepare_als.sh stage 1: extract speech features
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    for x in train test; do 
+    for x in train test; do
         am_prefix=$(echo $am | cut -d '_' -f 1)
         am_suffix=$(echo $am | cut -d '_' -f 2)
         echo $layers
@@ -59,6 +59,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --split $x \
                 --save-dir $tgt_dir/$am/feat_$pooling/layer$layer \
                 --pooling $pooling
+            rm -r $tgt_dir/$am/feat/layer$layer
         done
     done
 fi

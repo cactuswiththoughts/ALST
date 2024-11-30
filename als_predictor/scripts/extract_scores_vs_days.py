@@ -24,7 +24,7 @@ parser.add_argument('--out-path')
 args = parser.parse_args()
 
 data_dict = {
-    'Patient ID': [], 'Days': [], 'Score': [],
+    'Patient ID': [], 'Days': [], 'Score': [], 'Ground Truth': [],
 }
 
 scores = None
@@ -50,7 +50,8 @@ with open(args.in_path, 'r') as f_in:
             
             data_dict['Patient ID'].append(patient)
             data_dict['Days'].append(n_days)
-            data_dict['Score'].append(int(score))
+            data_dict['Score'].append(scores[i])
+            data_dict['Ground Truth'].append(int(score))
         offset += len(wav_ids)
 
 if scores is not None:

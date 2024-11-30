@@ -84,7 +84,7 @@ class Attention(nn.Module):
 
     def forward(self, x, mask=None):
         B, N, C = x.shape
-        #print(C)
+
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
@@ -196,7 +196,7 @@ class DecodeBlock(nn.Module):
         return x 
 
 class ALSDecoder(nn.Module):
-    def __init__(self, embed_dim, depth, input_dim=7, n_class=5, max_len=120):
+    def __init__(self, embed_dim, depth, input_dim=7, n_class=5, max_len=120, output_type='logits'):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
@@ -210,19 +210,22 @@ class ALSDecoder(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, max_len, self.embed_dim))
         trunc_normal_(self.pos_embed, std=.02)
         
-        # for ALS classification
+        # for ALS classification and/or regression
         # self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class))
-        self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class))
+        if output_type == 'logits':
+            self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class))
+        elif output_type == 'score':
+            self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, 1))
+        else:  # Both
+            self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class+1))
 
-    # x shape in [batch_size, sequence_len, feat_dim]
+    # x shape in [batch_size, sequence_len]
     # memory shape in [batch_size, memory_len, feat_dim]
     def forward(self, x, memory, mask=None):
         # batch size
         B = x.shape[0]
         # sequence len
         L = x.shape[1]
-        # memory len
-        # T = memory.shape[1]
         # 0 is the padding symbol, 1 is the start symbol
         x[x < 0] = -2
         x = self.tgt_embed(x + 2)
@@ -230,11 +233,6 @@ class ALSDecoder(nn.Module):
         x = x + self.pos_embed[:, :L]
         
         # forward to the Transformer decoder
-        #if mask is None:
-        #    src_mask = memory.new_ones(B, L, T)
-        #else:
-        #    mask = mask.float()
-        #    src_mask = (memory.new_ones(B, L, 1) @ mask.unsqueeze(-2)) > 0
         tgt_mask = subsequent_mask(L).to(x.device)
         for blk in self.blocks:
             x = blk(x, tgt_mask)
@@ -245,34 +243,59 @@ class ALSDecoder(nn.Module):
 
 # Multi-class classifier of ALS disease progression
 class ALSTransformer(nn.Module):
-    def __init__(self, embed_dim, depth, input_dim=1024, n_class=5, n_weights=24, max_len=1024):
+    def __init__(self, embed_dim, depth, input_dim=1024, n_class=5, n_task=1, n_weights=24, max_len=4096, max_phn_len=100, output_type='logits', pos_emb_type='sinusoid', use_phn_label=False):
         super().__init__()
+        self.output_type = output_type
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.n_class = n_class
+        self.n_task = n_task
         # Weighted-sum layer for multi-layer input features
         self.n_weights = n_weights
         self.weighted_sum = nn.Linear(n_weights, 1)
-
-        # Phone projection, assume there are 1 padding token (0) + 26 phns (use characters for now)
-        self.phn_proj = nn.Embedding(27, input_dim)
 
         # Transformer encode blocks
         self.blocks = nn.ModuleList([Block(dim=embed_dim, num_heads=1) for i in range(depth)])
         
         # sin pos embedding or learnable pos embedding, 55 = 50 sequence length
-        # self.pos_embed = nn.Parameter(get_sinusoid_encoding(max_len+5, self.embed_dim) * 0.1, requires_grad=True)
-        self.pos_embed = nn.Parameter(torch.zeros(1, max_len, self.embed_dim))
-        trunc_normal_(self.pos_embed, std=.02)
+        self.pos_emb_type = pos_emb_type
+        phn_embed_dim = self.embed_dim if use_phn_label else 2 * self.embed_dim
 
-        # for ALS classification
+        # Phone projection, assume there are 1 padding token (0) + 26 phns (use characters for now)
+        self.phn_proj = nn.Embedding(27, phn_embed_dim)
+
+        if pos_emb_type == 'sinusoid':
+            self.pos_embed = nn.Parameter(get_sinusoid_encoding(max_len, self.embed_dim) * 0.1, requires_grad=False)
+            self.phn_pos_embed = None 
+            if use_phn_label:
+                nn.Parameter(get_sinusoid_encoding(max_phn_len, phn_embed_dim) * 0.1, requires_grad=False)
+        elif pos_emb_type == 'none':
+            self.pos_embed = nn.Parameter(torch.zeros(1, max_len, self.embed_dim), requires_grad=False)
+            self.phn_pos_embed = None
+            if use_phn_label:
+                nn.Parameter(torch.zeros(1, max_phn_len, phn_embed_dim), requires_grad=False)
+        else:
+            self.pos_embed = nn.Parameter(torch.zeros(1, max_len, self.embed_dim))
+            self.phn_pos_embed = None
+            if use_phn_label:
+                nn.Parameter(torch.zeros(1, max_phn_len, phn_embed_dim))
+            trunc_normal_(self.pos_embed, std=.02)
+            trunc_normal_(self.phn_pos_embed, std=.02)
+
+        # for ALS classification and/or regression
         self.in_proj = nn.Linear(self.input_dim, embed_dim)
-        self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_class))
+        if self.output_type == 'logits':
+            self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_task*n_class))
+        elif self.output_type == 'score':
+            self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_task))
+        else:  # Both
+            self.mlp_head = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, n_task*(n_class+1)))
+
         self.layer_results = {}
         self.blocks[-1].register_forward_hook(self.get_activation('encoder_last_layer'))
 
     # x shape in [batch_size, sequence_len, feat_dim, n_layers]
-    def forward(self, x, mask=None, pool_mask=None, phns=None):
+    def forward(self, x, mask=None, pool_mask=None, phns=None, pos_ids=None, phn_pos_ids=None):
         # batch size
         B = x.shape[0]
         # sequence len
@@ -289,23 +312,37 @@ class ALSTransformer(nn.Module):
             x = self.weighted_sum(x).squeeze(-1)
 
         if self.embed_dim != self.input_dim:
-            x = self.in_proj(x)
+            x = self.in_proj(x) 
 
-        x = x + self.pos_embed[:, :T]
+        if pos_ids is not None:
+            pos_emb = torch.cat(
+                [self.pos_embed[:, pos_id] for pos_id in pos_ids])
+        else:
+            pos_emb = self.pos_embed[:, :T]
+ 
+        if self.pos_emb_type != 'none':
+            x = x + pos_emb
+ 
+        if phn_pos_ids is not None:
+            phn_pos_emb = torch.cat(
+                [self.phn_pos_embed[:, phn_pos_id] for phn_pos_id in phn_pos_ids])
+            x = x + phn_pos_emb
 
         # forward to the Transformer encoder
         for blk in self.blocks:
             x = blk(x, mask=attn_mask)
- 
+
         if phns is not None:
             phn_embs = self.phn_proj(phns)
-            x = x + phn_embs
-        
+            x = x + phn_embs 
+
         o = self.mlp_head(x)
-       
+
         if pool_mask is not None:
             o = pool_mask @ o
-        
+
+        if self.n_task > 1:
+            o = o.reshape(B, o.shape[1], self.n_task, -1)
         return o
 
     def get_activation(self, name):
@@ -315,15 +352,16 @@ class ALSTransformer(nn.Module):
 
 # Multi-class encoder decoder classifier of ALS disease progression
 class ALSEncDecTransformer(nn.Module):
-    def __init__(self, embed_dim, depth, input_dim=1024, n_class=5, n_weights=24, max_len=1024):
+    def __init__(self, embed_dim, depth, input_dim=1024, n_class=5, n_weights=24, max_len=4096, output_type='logits'):
         super().__init__()
         self.n_class = n_class
         self.encoder = ALSTransformer(
             embed_dim, depth, input_dim, n_class, n_weights, max_len,
         )
         self.decoder = ALSDecoder(
-            embed_dim, 1, n_class+2, n_class, max_len,
+            embed_dim, 1, n_class+2, n_class, max_len, output_type=output_type,
         )
+        self.output_type = output_type
 
     # x shape in [batch_size, sequence_len, feat_dim, n_layers]
     def forward(self, x, tgt=None, mask=None, pool_mask=None, phns=None, max_len=120):
@@ -343,13 +381,35 @@ class ALSEncDecTransformer(nn.Module):
         _ = self.encoder(x, mask=mask)
         x = self.encoder.layer_results['encoder_last_layer']
         ys = [x.new_ones(x.shape[0]).long()]
+        scores = []
         for i in range(max_len):
-            y = torch.stack(ys, dim=1)[:, i:i+1]
-            logit = self.decoder(y, x[:, i:i+1], mask=mask)
-            ys.append(logit.argmax(-1)[:, -1])
+            y = torch.stack(ys, dim=1)
+            logit_score = self.decoder(y, x[:, :i+1], mask=mask[:, :i+1])
+            if self.output_type == 'logits':
+                y_hat = logit_score.argmax(-1)[:, -1]
+            elif self.output_type == 'score':
+                y_hat = torch.maximum(
+                    torch.minimum(logit_score.round(), torch.tensor(4)),
+                    torch.tensor(0),
+                )[:, -1].long()
+                scores.append(score[:, -1])
+            else:
+                logit = logit_score[...,:-1]
+                score = logit_score[...,-1]
+                #y_hat = torch.maximum(
+                #    torch.minimum(score.round(), torch.tensor(4)),
+                #    torch.tensor(0),
+                #)[:, -1].long()
+                y_hat = logit.argmax(-1)[:, -1]
+                scores.append(score[:, -1])
+            ys.append(y_hat)
  
         ys = torch.stack(ys[1:], dim=-1)
-        return ys
+        if len(scores):
+            scores = torch.stack(scores, dim=-1)
+        else:
+            scores = None
+        return ys, scores
 
 
 # Multi-class encoder decoder classifier of ALS disease progression

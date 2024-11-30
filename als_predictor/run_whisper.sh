@@ -20,12 +20,6 @@ am_name=whisper_medium
 #am_name=whisper_base 
 #am_name=whisper_large-v2
 start_layer=0
-#start_layer=6
-#start_layer=22
-#start_layer=23
-#start_layer=31
-#end_layer=6
-#end_layer=22
 end_layer=23
 #end_layer=31
 layers=
@@ -36,12 +30,9 @@ layers=${layers#,}
 echo $layers
 
 pooling=mean+concat
-#label=text
-#label=score
 label=vieira
 model=alst
-#model=alst_encdec
-#model=linear
+
 if [ $model = alst_encdec ]; then
     depth=2
     lr=1e-4
@@ -51,26 +42,46 @@ else
 fi
 batch_size=25
 embed_dim=512
-#embed_dim=24
 
-tgt_dir=$(pwd)/../data/als
+tgt_dir=$PWD/../data/als
 if [ $label = vieira ]; then
     setup=vieira
 else
     setup=with_$label
 fi
 
-stage=2
-stop_stage=2
+stage=0
+stop_stage=1
 echo stage 0: Speech feature extraction
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     bash scripts/prepare_als.sh $tgt_dir $layers $am_name $pooling $label
 fi
 
-echo stage 1: Train and test ALS predictor using different regularizer weights
+echo stage 1: Train and test ALS predictor
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
+    am=$(echo $am_name | cut -d'_' -f 2)
+    exp_dir=$PWD/../exp/alst_whisper-${am}_seed42
+
+    for x in train test; do
+        python traintest.py --mode eval --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} --test-split $x \
+  	        --layers $layers --lr $lr --exp-dir $exp_dir --depth $depth \
+	        --batch_size $batch_size --embed_dim $embed_dim --model $model --am $am_name
+
+        python scripts/extract_scores_vs_days.py \
+            --in-path $tgt_dir/$setup/${am_name}/feat_${pooling}/layer0/$x.ids \
+            --score-path $exp_dir/preds/${x}_pred_als_scores.npy \
+            --out-path $exp_dir/${x}_${model}_${am_name}_score_vs_days.csv
+
+        python scripts/extract_scores_vs_days.py \
+            --in-path $tgt_dir/$setup/${am_name}/feat_${pooling}/layer0/$x.ids \
+            --score-path $exp_dir/preds/${x}_gold_als_label.npy \
+            --out-path $exp_dir/${x}_score_vs_days.csv
+    done
+fi
+
+echo stage 2: Train and test ALS predictor using different regularizer weights
+if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     mse_weight=1.0
-    # XXX
     for ce_weight in 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9; do
      	 exp_dir=../exp/${model}-${lr}-${depth}-${batch_size}-${embed_dim}-${am_name}-layer${start_layer}_${end_layer}-${pooling}-${setup}-with_mask-ce_weight${ce_weight}-mse_weight${mse_weight}
 	    python traintest.py --mode eval --data-dir $tgt_dir/$setup/${am_name}/feat_${pooling} \
@@ -89,8 +100,8 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         --out_file ${model}_${am_name}_${setup}_ce-weights_mse-weight${mse_weight}_results.csv
 fi
 
-echo stage 2: Train and test ALS predictor using different AM layers
-if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
+echo stage 3: Train and test ALS predictor using different AM layers
+if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     ce_weight=1.0
     mse_weight=1.0
     # XXX

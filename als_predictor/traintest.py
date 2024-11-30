@@ -16,10 +16,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from scripts.compute_rank_scores import compute_rank_scores
 from scripts.compute_auc import compute_auc
-np.random.seed(42)
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-
 sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
 
 from models import *
@@ -27,7 +23,9 @@ from dataloaders import *
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--mode", choices={'train', 'eval'}, default='train')
+parser.add_argument("--test-split", choices={'train', 'test'}, default='test')
 parser.add_argument("--data-dir", type=str, default="../../data/als/w2v2_big_960h_layer14", help="directory containing extracted features and labels")
 parser.add_argument("--layers", type=str, default="14")
 parser.add_argument("--exp-dir", type=str, default="./exp/", help="directory to dump experiments")
@@ -42,6 +40,9 @@ parser.add_argument("--ce_weight", type=float, default=1.0)
 parser.add_argument("--mse_weight", type=float, default=0.0)
 parser.add_argument("--no-longitudinal", action='store_true', help='not use longitudinal information')
 parser.add_argument("--use-phn-label", action='store_true', help='use phoneme labels as inputs')
+parser.add_argument("--use-day-ids", action='store_true', help='use true days as position ids')
+parser.add_argument("--mask-except", type=str, default='')
+parser.add_argument("--pos-emb-type", type=str, choices={'sinusoid', 'trainable', 'none'}, default='sinusoid')
 
 # just to generate the header for the result.csv
 def gen_result_header():
@@ -109,18 +110,25 @@ def train(audio_model, train_loader, test_loader, args):
     print("current #steps=%s, #epochs=%s" % (global_step, epoch), flush=True)
     print("start training...", flush=True)
     result = np.zeros([args.n_epochs, 24])
-    
+
+    begin_time = time.time()     
     for epoch in range(args.n_epochs):
         audio_model.train()
-        for i, (audio_input, als_label, sizes, label_sizes, pool_mask, phn_label) in enumerate(train_loader):
+        for i, (audio_input, als_label, sizes,
+                label_sizes, pool_mask, phn_label,
+                pos_ids, phn_pos_ids) in enumerate(train_loader):
             audio_input = audio_input.to(device, non_blocking=True)
             als_label = als_label.to(device, non_blocking=True)
             sizes = sizes.to(device, non_blocking=True)
             label_sizes = label_sizes.to(device, non_blocking=True)
             pool_mask = pool_mask.to(device, non_blocking=True)
-            phn_label = phn_label.to(device, non_blocking=True)
-            if not args.use_phn_label:
-                phn_label = None
+            if args.use_phn_label:
+                phn_pos_ids = phn_pos_ids.to(device, non_blocking=True)
+
+            if (not args.use_day_ids) or args.no_longitudinal:
+                pos_ids = None
+            else:
+                pos_ids = pos_ids.to(device, non_blocking=True)
 
             # warmup
             warm_up_step = 100
@@ -131,14 +139,20 @@ def train(audio_model, train_loader, test_loader, args):
                 print('warm-up learning rate is {:f}'.format(optimizer.param_groups[0]['lr']), flush=True)
 
             mask = length_to_mask(sizes, max_len=max(sizes))
-            label_mask = length_to_mask(label_sizes, max_len=max(label_sizes))
             scores = None
             if args.model == 'alst_encdec':
                 logits_and_scores = audio_model(audio_input, als_label, mask=mask, pool_mask=pool_mask, phns=phn_label)
                 logits = logits_and_scores[:, :, :-1]
                 scores = logits_and_scores[:, :, -1]
             else:
-                logits_and_scores = audio_model(audio_input, mask=mask, pool_mask=pool_mask, phns=phn_label)
+                logits_and_scores = audio_model(
+                    audio_input,
+                    mask=mask,
+                    pool_mask=pool_mask,
+                    phns=phn_label,
+                    pos_ids=pos_ids,
+                    phn_pos_ids=phn_pos_ids,
+                )
                 logits = logits_and_scores[:, :, :-1]
                 scores = logits_and_scores[:, :, -1]
             loss = loss_fn(logits.reshape(-1, logits.size(-1)), als_label.flatten())
@@ -194,7 +208,8 @@ def train(audio_model, train_loader, test_loader, args):
         if global_step > warm_up_step:
             scheduler.step()
 
-        print('Epoch-{0} lr: {1}'.format(epoch, optimizer.param_groups[0]['lr']), flush=True)
+        print('Epoch-{0} lr: {1}, takes {2}s'.format(epoch, optimizer.param_groups[0]['lr'], time.time()-begin_time), flush=True)
+    print(f'Total training time: {time.time()-begin_time}s')
 
 
 def validate(audio_model, val_loader, args, best_loss):
@@ -216,19 +231,25 @@ def validate(audio_model, val_loader, args, best_loss):
     mse_loss_fn = nn.MSELoss()
     with torch.no_grad():
         mse_loss = 0.0
-        for i, (audio_input, als_label, sizes, label_sizes, pool_mask, phn_label) in enumerate(val_loader):
+        for i, (audio_input, als_label, sizes, 
+                label_sizes, pool_mask, phn_label,
+                pos_ids, phn_pos_ids) in enumerate(val_loader):
             audio_input = audio_input.to(device)
             als_label = als_label.to(device)
             sizes = sizes.to(device, non_blocking=True)
             label_sizes = label_sizes.to(device, non_blocking=True)
             pool_mask = pool_mask.to(device, non_blocking=True)
-            phn_label = phn_label.to(device, non_blocking=True)
-            if not args.use_phn_label:
-                phn_label = None
+            
+            if args.use_phn_label:
+                # phn_label = phn_label.to(device, non_blocking=True)
+                phn_pos_ids = phn_pos_ids.to(device, non_blocking=True)
+
+            if (not args.use_day_ids) or args.no_longitudinal:
+                pos_ids = None
+            else:
+                pos_ids = pos_ids.to(device, non_blocking=True)
 
             mask = length_to_mask(sizes, max_len=max(sizes))
-            label_mask = length_to_mask(label_sizes, max_len=max(label_sizes))
-            
             logits = None
             scores = None
             if args.model == 'alst_encdec':
@@ -241,7 +262,14 @@ def validate(audio_model, val_loader, args, best_loss):
                     torch.tensor(0),
                 )
             else:
-                logits_and_scores = audio_model(audio_input, mask=mask, pool_mask=pool_mask, phns=phn_label)
+                logits_and_scores = audio_model(
+                    audio_input,
+                    mask=mask, 
+                    pool_mask=pool_mask,
+                    phns=phn_label,
+                    pos_ids=pos_ids,
+                    phn_pos_ids=phn_pos_ids,
+                )
                 logits = logits_and_scores[:, :, :-1]
                 scores = logits_and_scores[:, :, -1]
                 pred_label = logits.argmax(-1)
@@ -293,10 +321,10 @@ def validate(audio_model, val_loader, args, best_loss):
 
         mse_loss /= len(val_loader)
         #if not (exp_dir / 'preds' / 'gold_als_label.npy').exists():
-        np.save(exp_dir / 'preds' / 'gold_als_label.npy', gold_labels)
-        np.save(exp_dir / 'preds' / 'pred_als_label.npy', pred_labels)
+        np.save(exp_dir / 'preds' / f'{val_loader.dataset.split}_gold_als_label.npy', gold_labels)
+        np.save(exp_dir / 'preds' / f'{val_loader.dataset.split}_pred_als_label.npy', pred_labels)
         if len(pred_scores):
-            np.save(exp_dir / 'preds' / 'pred_als_scores.npy', pred_scores)
+            np.save(exp_dir / 'preds' / f'{val_loader.dataset.split}_pred_als_scores.npy', pred_scores)
 
         micro_f1_mse, precision_mse, recall_mse, macro_f1_mse, spearmanr_mse, kendalltau_mse, pairwise_acc_mse = 0., 0., 0., 0., 0., 0., 0.
         if len(pred_labels_mse):
@@ -318,8 +346,11 @@ def validate(audio_model, val_loader, args, best_loss):
     return mse_loss, (precision, precision_mse), (recall, recall_mse), (micro_f1, micro_f1_mse), (macro_f1, macro_f1_mse), (spearmanr, spearmanr_mse), (kendalltau, kendalltau_mse), (pairwise_acc, pairwise_acc_mse), auc, confusion
 
 args = parser.parse_args()
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed(args.seed)
 
-print(f'Layer {args.layers}')
+print(args.exp_dir)
 data_dirs = [osp.join(args.data_dir, f'layer{l}') for l in args.layers.split(',')]
 am = args.am
 feat_dim = {
@@ -333,19 +364,37 @@ feat_dim = {
 input_dim = feat_dim[am]
 n_weights = len(data_dirs)
 
-tr_dataset = ALSFeatureDataset([osp.join(data_dir, 'train') for data_dir in data_dirs], longitudinal=(not args.no_longitudinal))
+# Allow masking
+mask_except = None
+if args.mask_except:
+    mask_except = args.mask_except.split(',')
+    mask_except = list(map(int, mask_except))
+
+tr_dataset = ALSFeatureDataset(
+    [osp.join(data_dir, 'train') for data_dir in data_dirs], 
+    longitudinal=(not args.no_longitudinal),
+    use_phn_label=args.use_phn_label,
+    mask_except=mask_except,
+    split='train'
+)
 tr_dataloader = DataLoader(tr_dataset, collate_fn=tr_dataset.collater, batch_size=args.batch_size, shuffle=True)
-te_dataset = ALSFeatureDataset([osp.join(data_dir, 'test') for data_dir in data_dirs], longitudinal=(not args.no_longitudinal))
+te_dataset = ALSFeatureDataset(
+    [osp.join(data_dir, args.test_split) for data_dir in data_dirs],
+    longitudinal=(not args.no_longitudinal),
+    use_phn_label=args.use_phn_label,
+    mask_except=mask_except,
+    split=args.test_split,
+)
 te_dataloader = DataLoader(te_dataset, collate_fn=te_dataset.collater, batch_size=50, shuffle=False)
 max_len = max(tr_dataset.max_size, te_dataset.max_size)
 print(f'maximal sequence length: {max_len}')
 
 if args.model == 'alst_encdec':
-    audio_model = ALSEncDecTransformer(embed_dim=args.embed_dim, depth=args.depth, input_dim=input_dim, max_len=max_len, n_weights=n_weights, output_type='both')
+    audio_model = ALSEncDecTransformer(embed_dim=args.embed_dim, depth=args.depth, input_dim=input_dim, n_weights=n_weights, output_type='both')
 elif args.model == 'linear':
     audio_model = ALSLinear(input_dim, n_weights=n_weights)
 else:
-    audio_model = ALSTransformer(embed_dim=args.embed_dim, depth=args.depth, input_dim=input_dim, max_len=max_len, n_weights=n_weights, output_type='both')
+    audio_model = ALSTransformer(embed_dim=args.embed_dim, depth=args.depth, input_dim=input_dim, n_weights=n_weights, max_len=max_len, output_type='both', use_phn_label=args.use_phn_label, pos_emb_type=args.pos_emb_type)
 print(args.model)
 print(audio_model)
 
